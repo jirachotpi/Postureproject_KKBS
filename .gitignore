@@ -1,0 +1,11 @@
+# ไฟล์ Environment (ห้ามเอาขึ้นเด็ดขาด)
+.venv/
+venv/
+env/
+
+# ไฟล์ Cache ของ Python
+__pycache__/
+*.py[cod]
+
+# ไฟล์วิดีโอ (ถ้ามี)
+*.mp4
