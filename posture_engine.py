@@ -152,9 +152,10 @@ class PostureMonitorApp:
         self.mp_pose = mp.solutions.pose
         self.stats = PostureStatistics()
         self.last_tick = time.monotonic()
+        
         self.pose = self.mp_pose.Pose(
             static_image_mode=False,
-            model_complexity=1, # Increased for better accuracy on side views
+            model_complexity=1,
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5,
             smooth_landmarks=True
@@ -170,7 +171,12 @@ class PostureMonitorApp:
         self.baseline_torso = None
         self.baseline_shoulder_y = None
         
-        # Landmarks mapping (Left vs Right)
+        # Current Metrics (เพื่อให้ API มาดึงค่าไปใช้ได้)
+        self.current_state = "GOOD"
+        self.current_fhp_ratio = 0.0
+        self.current_slump_angle = 0.0
+        self.is_user_standing = False
+
         self.sides = {
             'left': {
                 'ear': self.mp_pose.PoseLandmark.LEFT_EAR,
@@ -185,7 +191,6 @@ class PostureMonitorApp:
         }
 
     def detect_best_side(self, landmarks):
-        # Compare average visibility of left vs right landmarks
         l_vis = sum([landmarks[l.value].visibility for l in self.sides['left'].values()])
         r_vis = sum([landmarks[l.value].visibility for l in self.sides['right'].values()])
         return 'left' if l_vis > r_vis else 'right'
@@ -193,141 +198,93 @@ class PostureMonitorApp:
     def start_calibration(self):
         self.is_calibrating = True
         self.calibration_start = time.monotonic()
-        print("Started Calibration. Please sit upright...")
 
-    def run(self):
-        cap = cv2.VideoCapture(0)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    def process_frame(self, frame):
+        """
+        ฟังก์ชันหลัก: รับ 1 เฟรม (BGR), ประมวลผล, วาด Landmark, และคืนค่าเฟรมที่ประมวลผลแล้ว
+        """
+        # 1. Pre-process
+        h, w, _ = frame.shape
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        res = self.pose.process(rgb)
 
-        print("System Ready. Press 'c' to Calibrate, 'q' to Quit.")
+        if not res.pose_landmarks:
+            return frame # คืนภาพเปล่าถ้าไม่เจอคน
 
-        while cap.isOpened():
-            ok, frame = cap.read()
-            if not ok: continue
+        lm = res.pose_landmarks.landmark
+        active_side = self.detect_best_side(lm)
+        side_idx = self.sides[active_side]
+        
+        nose_lm = lm[self.mp_pose.PoseLandmark.NOSE.value]
+        ear_lm = lm[side_idx['ear'].value]
+        facing_dir = 1 if nose_lm.x > ear_lm.x else -1
 
-            frame = cv2.flip(frame, 1) # Mirror
-            h, w, _ = frame.shape
+        # 2. Extract Keypoints
+        def pt(idx):
+            l = lm[idx.value]
+            return self.kp_smoother.update(idx.value, l.x * w, l.y * h, l.visibility > 0.4)
 
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            res = self.pose.process(rgb)
+        ear = pt(side_idx['ear'])
+        sh = pt(side_idx['shoulder'])
+        hip_raw = lm[side_idx['hip'].value]
+        
+        # 3. Handle Hip Occlusion
+        hip = None
+        if hip_raw.visibility > 0.4:
+            hip = pt(side_idx['hip'])
+        elif self.baseline_torso is not None and sh is not None:
+            hip = (sh[0], int(sh[1] + self.baseline_torso))
 
-            if res.pose_landmarks:
-                lm = res.pose_landmarks.landmark
+        if not (ear and sh and hip):
+            return frame
+
+        # 4. Drawing & Logic
+        cv2.line(frame, ear, sh, (255, 200, 0), 2)
+        cv2.line(frame, sh, hip, (255, 200, 0), 2)
+
+        # --- CALIBRATION ---
+        if self.is_calibrating:
+            elapsed = time.monotonic() - self.calibration_start
+            cv2.putText(frame, f"CALIBRATING... {5 - int(elapsed)}s", (50, 50), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 2)
+            if elapsed >= 5.0:
+                self.baseline_torso = np.hypot(sh[0]-hip[0], sh[1]-hip[1])
+                self.baseline_shoulder_y = sh[1]
+                self.is_calibrating = False
+        
+        # --- ANALYSIS ---
+        elif self.baseline_torso is not None:
+            # คำนวณ Metric
+            raw_fhp = (ear[0] - sh[0]) * facing_dir 
+            self.current_fhp_ratio = self.fhp_smoother.update(raw_fhp / self.baseline_torso)
+            
+            dx, dy = sh[0] - hip[0], sh[1] - hip[1]
+            self.current_slump_angle = abs(90 - abs(np.degrees(np.arctan2(dy, dx))))
+            
+            self.is_user_standing = (self.baseline_shoulder_y - sh[1]) > (self.baseline_torso * 0.4)
+
+            # Update Timing & Stats
+            now = time.monotonic()
+            delta_t = now - self.last_tick
+            self.last_tick = now
+
+            if self.is_user_standing:
+                self.current_state = "AWAY"
+                cv2.putText(frame, "STATUS: STANDING/AWAY", (30, 80), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (200, 200, 200), 2)
+            else:
+                is_bad = self.current_fhp_ratio > 0.15 or self.current_slump_angle > 15.0
+                self.current_state = self.state_machine.update(is_bad)
+                self.stats.update(self.current_state, delta_t)
+
+                # UI Feedback
+                color = {"GOOD": (0,255,0), "WARNING": (0,255,255), 
+                         "BAD": (0,140,255), "CRITICAL": (0,0,255)}.get(self.current_state, (255,255,255))
                 
-                # 1. Detect active side and face direction
-                active_side = self.detect_best_side(lm)
-                side_idx = self.sides[active_side]
-                
-                nose_lm = lm[self.mp_pose.PoseLandmark.NOSE.value]
-                ear_lm = lm[side_idx['ear'].value]
-                
-                # If nose.x > ear.x, facing right (+1), else facing left (-1)
-                facing_dir = 1 if nose_lm.x > ear_lm.x else -1
+                cv2.putText(frame, f"POSTURE: {self.current_state}", (30, 130), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 3)
 
-                # 2. Extract and smooth keypoints
-                def pt(idx):
-                    l = lm[idx.value]
-                    return self.kp_smoother.update(idx.value, l.x * w, l.y * h, l.visibility > 0.4)
-
-                ear = pt(side_idx['ear'])
-                sh = pt(side_idx['shoulder'])
-                hip_raw = lm[side_idx['hip'].value]
-                
-                # 3. Handle Hip Occlusion & Calibration Proxy
-                hip = None
-                if hip_raw.visibility > 0.4:
-                    hip = pt(side_idx['hip'])
-                elif self.baseline_torso is not None and sh is not None:
-                    # Proxy hip position using baseline (dropping down vertically)
-                    hip = (sh[0], int(sh[1] + self.baseline_torso))
-
-                if ear and sh and hip:
-                    # Draw skeleton
-                    cv2.line(frame, ear, sh, (255, 200, 0), 2)
-                    cv2.line(frame, sh, hip, (255, 200, 0), 2)
-                    cv2.circle(frame, ear, 5, (0, 255, 255), -1)
-                    cv2.circle(frame, sh, 5, (0, 255, 255), -1)
-                    cv2.circle(frame, hip, 5, (0, 255, 255), -1)
-
-                    # --- CALIBRATION LOGIC ---
-                    if self.is_calibrating:
-                        elapsed = time.monotonic() - self.calibration_start
-                        cv2.putText(frame, f"Calibrating... {5 - int(elapsed)}s", (50, 50), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 2)
-                        
-                        if elapsed >= 5.0:
-                            self.baseline_torso = dist(sh, hip)
-                            self.baseline_shoulder_y = sh[1]
-                            self.is_calibrating = False
-                            print(f"Calibration Done. Torso Baseline: {self.baseline_torso:.1f}px")
-
-                    # --- POSTURE ANALYSIS LOGIC ---
-                    elif self.baseline_torso is not None:
-                        # 1. Normalize Torso Length (Current vs Baseline logic)
-                        torso_len = self.baseline_torso
-                        
-                        # 2. Forward Head Posture (FHP)
-                        # Horizontal distance between ear and shoulder, aware of face direction
-                        raw_fhp = (ear[0] - sh[0]) * facing_dir 
-                        norm_fhp = raw_fhp / torso_len
-                        smooth_fhp = self.fhp_smoother.update(norm_fhp)
-
-                        # 3. Slump Proxy (Spine angle approximation)
-                        slump_angle = angle_vertical(sh, hip)
-                        
-                        # Detect standing up (If shoulder moves up significantly compared to baseline)
-                        is_standing = (self.baseline_shoulder_y - sh[1]) > (torso_len * 0.4)
-
-                        now = time.monotonic()
-                        delta_t = now - self.last_tick
-                        self.last_tick = now
-                        
-                        if is_standing:
-                            state = self.state_machine.update(is_bad)
-                            self.stats.update(state, delta_t)
-                            cv2.putText(frame, "STATUS: STANDING/AWAY", (30, 80), 
-                                        cv2.FONT_HERSHEY_SIMPLEX, 1, (200, 200, 200), 2)
-                            self.state_machine.update(False) # Pause timer
-                        else:
-                            # Evaluate Posture
-                            # FHP > 0.15 torso length is considered warning threshold
-                            # Slump angle > 15 degrees is considered slouched
-                            is_bad = smooth_fhp > 0.15 or slump_angle > 15.0
-                            state = self.state_machine.update(is_bad)
-
-                            # Colors based on state
-                            colors = {"GOOD": (0,255,0), "WARNING": (0,255,255), 
-                                      "BAD": (0,140,255), "CRITICAL": (0,0,255)}
-                            color = colors[state]
-
-                            cv2.putText(frame, f"FHP Ratio: {smooth_fhp:.2f} (Threshold 0.15)",
-                                        (30, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-                            cv2.putText(frame, f"Slump Angle: {slump_angle:.1f} deg",
-                                        (30, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-                            cv2.putText(frame, f"POSTURE: {state}",
-                                        (30, 130), cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 3)
-                            
-                            if state != "GOOD":
-                                cv2.putText(frame, "Please sit back and align your neck.",
-                                            (30, 170), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-                    else:
-                        cv2.putText(frame, "PRESS 'c' TO CALIBRATE POSTURE", (50, 50), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-                else:
-                    cv2.putText(frame, "Landmarks not fully visible. Please adjust camera.", (30, 50), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-
-            cv2.imshow("Ergonomic Side-View Monitor", frame)
-
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'):
-                break
-            elif key == ord('c'):
-                self.start_calibration()
-
-        cap.release()
-        cv2.destroyAllWindows()
+        return frame
 
 if __name__ == "__main__":
     app = PostureMonitorApp()
