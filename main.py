@@ -34,6 +34,7 @@ def cv_background_thread():
     while cap.isOpened():
         success, frame = cap.read()
         if not success:
+            time.sleep(0.1)
             continue
 
         # ส่งเฟรมไปให้ Engine ประมวลผล (Refactored method)

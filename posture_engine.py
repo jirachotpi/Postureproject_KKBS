@@ -288,4 +288,3 @@ class PostureMonitorApp:
 
 if __name__ == "__main__":
     app = PostureMonitorApp()
-    app.run()
