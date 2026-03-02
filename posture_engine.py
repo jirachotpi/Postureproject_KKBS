@@ -3,6 +3,63 @@ import mediapipe as mp
 import numpy as np
 import time
 from collections import deque
+import json
+import os
+from datetime import datetime
+
+# ------------------------------
+# Statistics & Logging Engine
+# ------------------------------
+class PostureStatistics:
+    def __init__(self, filename="posture_stats.json"):
+        self.filename = filename
+        self.current_date = datetime.now().strftime("%Y-%m-%d")
+        self.data = self._load_data()
+
+    def _load_data(self):
+        if os.path.exists(self.filename):
+            try:
+                with open(self.filename, 'r') as f:
+                    full_data = json.load(f)
+                    # Return data for today or init new if date changed
+                    return full_data.get(self.current_date, self._init_day_structure())
+            except:
+                return self._init_day_structure()
+        return self._init_day_structure()
+
+    def _init_day_structure(self):
+        return {
+            "total_sitting_seconds": 0,
+            "states": {
+                "GOOD": 0,
+                "WARNING": 0,
+                "BAD": 0,
+                "CRITICAL": 0
+            },
+            "last_updated": str(datetime.now())
+        }
+
+    def update(self, state, duration_sec):
+        # Update total time and specific state time
+        self.data["total_sitting_seconds"] += duration_sec
+        if state in self.data["states"]:
+            self.data["states"][state] += duration_sec
+        
+        self.data["last_updated"] = str(datetime.now())
+        self._save_to_disk()
+
+    def _save_to_disk(self):
+        # Read all historical data first
+        all_history = {}
+        if os.path.exists(self.filename):
+            with open(self.filename, 'r') as f:
+                try: all_history = json.load(f)
+                except: pass
+        
+        # Merge current day and save
+        all_history[self.current_date] = self.data
+        with open(self.filename, 'w') as f:
+            json.dump(all_history, f, indent=4)
 
 # ------------------------------
 # Geometry & Math Utilities
@@ -93,6 +150,8 @@ class ErgonomicStateMachine:
 class PostureMonitorApp:
     def __init__(self):
         self.mp_pose = mp.solutions.pose
+        self.stats = PostureStatistics()
+        self.last_tick = time.monotonic()
         self.pose = self.mp_pose.Pose(
             static_image_mode=False,
             model_complexity=1, # Increased for better accuracy on side views
@@ -219,8 +278,14 @@ class PostureMonitorApp:
                         
                         # Detect standing up (If shoulder moves up significantly compared to baseline)
                         is_standing = (self.baseline_shoulder_y - sh[1]) > (torso_len * 0.4)
+
+                        now = time.monotonic()
+                        delta_t = now - self.last_tick
+                        self.last_tick = now
                         
                         if is_standing:
+                            state = self.state_machine.update(is_bad)
+                            self.stats.update(state, delta_t)
                             cv2.putText(frame, "STATUS: STANDING/AWAY", (30, 80), 
                                         cv2.FONT_HERSHEY_SIMPLEX, 1, (200, 200, 200), 2)
                             self.state_machine.update(False) # Pause timer

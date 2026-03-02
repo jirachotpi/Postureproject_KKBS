@@ -1,11 +1,15 @@
-# ไฟล์ Environment (ห้ามเอาขึ้นเด็ดขาด)
 .venv/
 venv/
 env/
 
-# ไฟล์ Cache ของ Python
+yolo11n-pose.pt
+yolo_app.py
+test_yolo.py
+new_app.py
+test_mediapipe.py
+app.py
+
 __pycache__/
 *.py[cod]
 
-# ไฟล์วิดีโอ (ถ้ามี)
 *.mp4
