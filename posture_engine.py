@@ -10,25 +10,22 @@ from datetime import datetime
 # ------------------------------
 # Statistics & Logging Engine
 # ------------------------------
-class PostureStatistics:
-    def __init__(self, filename="posture_stats.json"):
-        self.filename = filename
-        self.current_date = datetime.now().strftime("%Y-%m-%d")
-        self.data = self._load_data()
+from pymongo import MongoClient
 
-    def _load_data(self):
-        if os.path.exists(self.filename):
-            try:
-                with open(self.filename, 'r') as f:
-                    full_data = json.load(f)
-                    # Return data for today or init new if date changed
-                    return full_data.get(self.current_date, self._init_day_structure())
-            except:
-                return self._init_day_structure()
-        return self._init_day_structure()
+class PostureStatistics:
+    def __init__(self, db_name="ErgoSideDB", collection_name="posture_stats"):
+        self.client = MongoClient("mongodb://localhost:27017/") # เชื่อมต่อ Local MongoDB
+        self.db = self.client[db_name]
+        self.collection = self.db[collection_name]
+        self.current_date = datetime.now().strftime("%Y-%m-%d")
+        
+        # ตรวจสอบว่ามีข้อมูลของวันนี้หรือยัง ถ้าไม่มีให้สร้างขึ้นใหม่
+        if not self.collection.find_one({"_id": self.current_date}):
+            self._init_day_structure()
 
     def _init_day_structure(self):
-        return {
+        doc = {
+            "_id": self.current_date, # ใช้ วันที่ เป็น ID เลย
             "total_sitting_seconds": 0,
             "states": {
                 "GOOD": 0,
@@ -38,28 +35,26 @@ class PostureStatistics:
             },
             "last_updated": str(datetime.now())
         }
+        self.collection.insert_one(doc)
 
     def update(self, state, duration_sec):
-        # Update total time and specific state time
-        self.data["total_sitting_seconds"] += duration_sec
-        if state in self.data["states"]:
-            self.data["states"][state] += duration_sec
-        
-        self.data["last_updated"] = str(datetime.now())
-        self._save_to_disk()
+        # ใช้ $inc ของ MongoDB เพื่อเพิ่มค่าโดยตรง (ประสิทธิภาพดีกว่าเขียนไฟล์ใหม่)
+        self.collection.update_one(
+            {"_id": self.current_date},
+            {
+                "$inc": {
+                    "total_sitting_seconds": duration_sec,
+                    f"states.{state}": duration_sec
+                },
+                "$set": {"last_updated": str(datetime.now())}
+            }
+        )
 
-    def _save_to_disk(self):
-        # Read all historical data first
-        all_history = {}
-        if os.path.exists(self.filename):
-            with open(self.filename, 'r') as f:
-                try: all_history = json.load(f)
-                except: pass
-        
-        # Merge current day and save
-        all_history[self.current_date] = self.data
-        with open(self.filename, 'w') as f:
-            json.dump(all_history, f, indent=4)
+    @property
+    def data(self):
+        # คืนค่าข้อมูลของวันนี้สำหรับ endpoint /statistics
+        return self.collection.find_one({"_id": self.current_date}) or {}
+
 
 # ------------------------------
 # Geometry & Math Utilities

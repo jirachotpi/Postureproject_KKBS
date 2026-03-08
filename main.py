@@ -105,6 +105,41 @@ async def get_stats():
     return JSONResponse(content=to_python(monitor.stats.data))
 
 
+@app.get("/history")
+async def get_history():
+    """ดึงข้อมูลประวัติทุกวันจาก MongoDB"""
+    try:
+        # ดึงเอกสารทั้งหมดจาก collection
+        cursor = monitor.stats.collection.find({})
+        raw_list = list(cursor)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+    result = {}
+    for day in raw_list:
+        date_id = day.get("_id")
+        total = day.get("total_sitting_seconds", 0)
+        states = day.get("states", {})
+
+        # คำนวณ score และ breakdown % อัตโนมัติเหมือนเดิม
+        good_sec = states.get("GOOD", 0)
+        ergonomic_score = round((good_sec / total * 100) if total > 0 else 0, 1)
+
+        breakdown = {}
+        for state, sec in states.items():
+            breakdown[state] = round((sec / total * 100) if total > 0 else 0, 1)
+
+        result[date_id] = {
+            "total_sitting_seconds": total,
+            "states": states,
+            "ergonomic_score": ergonomic_score,
+            "breakdown": breakdown,
+            "last_updated": day.get("last_updated")
+        }
+
+    return JSONResponse(content=to_python(result))
+
+
 @app.get("/video_feed")
 async def video_feed():
     def generate():
