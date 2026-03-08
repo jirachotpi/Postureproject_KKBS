@@ -209,6 +209,10 @@ class PostureMonitorApp:
         res = self.pose.process(rgb)
 
         if not res.pose_landmarks:
+            self.current_state = "NO_PERSON"
+            self.current_fhp_ratio = 0.0
+            self.current_slump_angle = 0.0
+            self.is_user_standing = False
             return frame # คืนภาพเปล่าถ้าไม่เจอคน
 
         lm = res.pose_landmarks.landmark
@@ -236,6 +240,10 @@ class PostureMonitorApp:
             hip = (sh[0], int(sh[1] + self.baseline_torso))
 
         if not (ear and sh and hip):
+            self.current_state = "TRACKING"
+            self.current_fhp_ratio = 0.0
+            self.current_slump_angle = 0.0
+            self.is_user_standing = False
             return frame
 
         # 4. Drawing & Logic
@@ -256,12 +264,12 @@ class PostureMonitorApp:
         elif self.baseline_torso is not None:
             # คำนวณ Metric
             raw_fhp = (ear[0] - sh[0]) * facing_dir 
-            self.current_fhp_ratio = self.fhp_smoother.update(raw_fhp / self.baseline_torso)
+            self.current_fhp_ratio = float(self.fhp_smoother.update(raw_fhp / self.baseline_torso))
             
             dx, dy = sh[0] - hip[0], sh[1] - hip[1]
-            self.current_slump_angle = abs(90 - abs(np.degrees(np.arctan2(dy, dx))))
+            self.current_slump_angle = float(abs(90 - abs(np.degrees(np.arctan2(dy, dx)))))
             
-            self.is_user_standing = (self.baseline_shoulder_y - sh[1]) > (self.baseline_torso * 0.4)
+            self.is_user_standing = bool((self.baseline_shoulder_y - sh[1]) > (self.baseline_torso * 0.4))
 
             # Update Timing & Stats
             now = time.monotonic()
