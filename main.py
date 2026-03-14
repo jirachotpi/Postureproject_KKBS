@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 
 from posture_engine import PostureMonitorApp
 
-app = FastAPI(title="ErgoSide Posture API")
+app = FastAPI(title="OhO Posture API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -73,11 +73,17 @@ def cv_background_thread():
 async def get_status():
     try:
         data = {
-            "state": str(to_python(monitor.current_state)),
-            "fhp_ratio": round(float(to_python(monitor.current_fhp_ratio) or 0.0), 3),
-            "slump_angle": round(float(to_python(monitor.current_slump_angle) or 0.0), 1),
-            "is_calibrated": bool(monitor.baseline_torso is not None),
-            "is_standing": bool(to_python(monitor.is_user_standing)),
+            "state":          str(to_python(monitor.current_state)),
+            "risk_score":     round(float(to_python(monitor.current_risk_score) or 0.0), 1),
+            "metric_scores":  to_python(monitor.current_metric_scores),
+            "metric_states":  to_python(monitor.current_metric_states),
+            "fhp_ratio":      round(float(to_python(monitor.current_fhp_ratio) or 0.0), 3),
+            "slump_angle":    round(float(to_python(monitor.current_slump_angle) or 0.0), 1),
+            "arm_raise_angle":round(float(to_python(monitor.current_arm_raise) or 0.0), 1),
+            "arm_elbow_angle":round(float(to_python(monitor.current_arm_elbow) or 0.0), 1),
+            "shoulder_sym":   round(float(to_python(monitor.current_shoulder_sym) or 0.0), 4),
+            "is_calibrated":  bool(monitor.thresholds.is_calibrated),
+            "is_standing":    bool(to_python(monitor.is_user_standing)),
         }
 
         return JSONResponse(
