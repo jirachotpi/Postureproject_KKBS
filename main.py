@@ -59,12 +59,16 @@ def cv_background_thread():
     while cap.isOpened():
         success, frame = cap.read()
         if not success:
+            time.sleep(0.05)
             continue
 
-        processed = monitor.process_frame(frame)
-
-        with frame_lock:
-            current_processed_frame = processed.copy()
+        try:
+            processed = monitor.process_frame(frame)
+            with frame_lock:
+                current_processed_frame = processed.copy()
+        except Exception as e:
+            print(f"[cv_background_thread] error: {e}")
+            time.sleep(0.05)
 
     cap.release()
 
@@ -151,10 +155,18 @@ async def video_feed():
     def generate():
         while True:
             with frame_lock:
-                if current_processed_frame is None:
-                    continue
-                _, buffer = cv2.imencode(".jpg", current_processed_frame)
-                frame_bytes = buffer.tobytes()
+                frame = None if current_processed_frame is None else current_processed_frame.copy()
+
+            if frame is None:
+                time.sleep(0.03)
+                continue
+
+            ok, buffer = cv2.imencode(".jpg", frame)
+            if not ok:
+                time.sleep(0.03)
+                continue
+
+            frame_bytes = buffer.tobytes()
 
             yield (
                 b"--frame\r\n"

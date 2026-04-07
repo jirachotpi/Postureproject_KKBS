@@ -68,13 +68,21 @@ class AdaptiveKeypointEMA:
 
     def update(self, idx, x, y, visible=True):
         if not visible:
-            return self.state.get(idx)
+            prev = self.state.get(idx)
+            if prev is None:
+                return None
+            return (int(prev[0]), int(prev[1]))
+
         if idx not in self.state:
-            self.state[idx] = (x, y)
+            self.state[idx] = (float(x), float(y))
         else:
             px, py = self.state[idx]
             alpha = self.fast_alpha if dist((x, y), (px, py)) > self.diff_thresh else self.base_alpha
-            self.state[idx] = (alpha * x + (1 - alpha) * px, alpha * y + (1 - alpha) * py)
+            self.state[idx] = (
+                alpha * float(x) + (1 - alpha) * float(px),
+                alpha * float(y) + (1 - alpha) * float(py),
+            )
+
         return (int(self.state[idx][0]), int(self.state[idx][1]))
 
 
@@ -386,6 +394,7 @@ class PostureMonitorApp:
         self.mp_pose = mp.solutions.pose
         self.stats   = PostureStatistics()
         self.last_tick = time.monotonic()
+        self.last_db_write = time.monotonic()
 
         self.pose = self.mp_pose.Pose(
             static_image_mode=False,
@@ -588,7 +597,11 @@ class PostureMonitorApp:
 
                 # Overall state from risk score + time buffer
                 self.current_state = self.state_machine.update(self.current_risk_score)
-                self.stats.update(self.current_state, delta_t)
+
+                now_db = time.monotonic()
+                if now_db - self.last_db_write >= 1.0:
+                    self.stats.update(self.current_state, 1)
+                    self.last_db_write = now_db
 
             # HUD
             draw_hud(
