@@ -177,6 +177,23 @@ class AdaptiveThresholds:
             b.clear()
         self.is_calibrated = True
 
+    def to_dict(self):
+        return {
+            "fhp": self.fhp,
+            "slump": self.slump,
+            "arm_raise": self.arm_raise,
+            "shoulder_sym": self.shoulder_sym,
+            "is_calibrated": self.is_calibrated
+        }
+
+    def from_dict(self, data):
+        if not data: return
+        self.fhp = data.get("fhp", self.fhp)
+        self.slump = data.get("slump", self.slump)
+        self.arm_raise = data.get("arm_raise", self.arm_raise)
+        self.shoulder_sym = data.get("shoulder_sym", self.shoulder_sym)
+        self.is_calibrated = data.get("is_calibrated", self.is_calibrated)
+
 
 # =====================================================================
 # Per-Metric State Machine
@@ -470,6 +487,9 @@ class PostureMonitorApp:
         self.current_shoulder_sym  = 0.0
         self.is_user_standing      = False
 
+        # Load persisted calibration if exists
+        self.load_calibration()
+
         # Landmark index maps per side
         PL = self.mp_pose.PoseLandmark
         self.sides = {
@@ -498,7 +518,34 @@ class PostureMonitorApp:
             self.thresholds.slump["warn"] = float(data["slump_threshold"])
         if "fhp_threshold" in data:
             self.thresholds.fhp["warn"] = float(data["fhp_threshold"])
+        
+        # Load measurements if they exist in config
+        if "baseline_torso" in data:
+            self.baseline_torso = float(data["baseline_torso"])
+        if "baseline_shoulder_y" in data:
+            self.baseline_shoulder_y = float(data["baseline_shoulder_y"])
+        if "thresholds_data" in data:
+            self.thresholds.from_dict(data["thresholds_data"])
+            
         self.config.save(data)
+
+    def save_calibration(self):
+        """Save all body measurements and calibrated thresholds."""
+        self.config.save({
+            "baseline_torso": self.baseline_torso,
+            "baseline_shoulder_y": self.baseline_shoulder_y,
+            "thresholds_data": self.thresholds.to_dict()
+        })
+
+    def load_calibration(self):
+        """Load from config file."""
+        data = self.config.data
+        if "baseline_torso" in data:
+            self.baseline_torso = data["baseline_torso"]
+        if "baseline_shoulder_y" in data:
+            self.baseline_shoulder_y = data["baseline_shoulder_y"]
+        if "thresholds_data" in data:
+            self.thresholds.from_dict(data["thresholds_data"])
 
     # ------------------------------------------------------------------
     def process_frame(self, frame):
@@ -578,6 +625,7 @@ class PostureMonitorApp:
                 self.baseline_shoulder_y = sh[1]
                 self.thresholds.finalize()
                 self.is_calibrating = False
+                self.save_calibration()
 
         # ── ANALYSIS ───────────────────────────────────────────────
         elif self.baseline_torso is not None:
