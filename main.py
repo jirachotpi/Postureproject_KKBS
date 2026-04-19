@@ -134,7 +134,9 @@ async def get_status():
             content={"error": str(e)}
         )
 
-
+@app.post("/calibrate")
+async def trigger_calibration():
+    monitor.start_calibration()
     return {"status": "success", "message": "Calibration started for 5 seconds"}
 
 
