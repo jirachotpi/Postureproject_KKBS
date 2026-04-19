@@ -4,6 +4,8 @@ import numpy as np
 import time
 from collections import deque
 from datetime import datetime
+import json
+import os
 from pymongo import MongoClient
 
 
@@ -39,6 +41,36 @@ class PostureStatistics:
     @property
     def data(self):
         return self.collection.find_one({"_id": self.current_date}) or {}
+
+
+# =====================================================================
+# Configuration Manager
+# =====================================================================
+class PostureConfig:
+    def __init__(self, filename="config.json"):
+        self.filename = filename
+        self.defaults = {
+            "slump_threshold": 15.0,
+            "fhp_threshold": 0.15,
+            "camera_source": "0"
+        }
+        self.data = self.defaults.copy()
+        self.data = self.load()
+
+    def load(self):
+        if not os.path.exists(self.filename):
+            self.save(self.defaults)
+            return self.defaults.copy()
+        try:
+            with open(self.filename, 'r') as f:
+                return {**self.defaults, **json.load(f)}
+        except:
+            return self.defaults.copy()
+
+    def save(self, data):
+        self.data.update(data)
+        with open(self.filename, 'w') as f:
+            json.dump(self.data, f, indent=4)
 
 
 # =====================================================================
@@ -416,6 +448,10 @@ class PostureMonitorApp:
         self.sm_arm      = MetricStateMachine("arm")
         self.sm_shoulder = MetricStateMachine("shoulder")
 
+        # Config & Persistence
+        self.config = PostureConfig()
+        self.apply_config(self.config.data)
+
         # Calibration
         self.is_calibrating:      bool = False
         self.calibration_start:   float = 0.0
@@ -450,10 +486,19 @@ class PostureMonitorApp:
         r_vis = sum(lm[e.value].visibility for e in self.sides["right"].values())
         return "left" if l_vis > r_vis else "right"
 
-    def start_calibration(self):
         self.is_calibrating    = True
         self.calibration_start = time.monotonic()
         self.thresholds        = AdaptiveThresholds()   # reset
+        # Re-apply manual config overrides if they exist
+        self.apply_config(self.config.data)
+
+    def apply_config(self, data: dict):
+        """Manually override thresholds from config."""
+        if "slump_threshold" in data:
+            self.thresholds.slump["warn"] = float(data["slump_threshold"])
+        if "fhp_threshold" in data:
+            self.thresholds.fhp["warn"] = float(data["fhp_threshold"])
+        self.config.save(data)
 
     # ------------------------------------------------------------------
     def process_frame(self, frame):

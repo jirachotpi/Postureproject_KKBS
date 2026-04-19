@@ -7,10 +7,18 @@ import numpy as np
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
+from pydantic import BaseModel
 
 from posture_engine import PostureMonitorApp
 
 app = FastAPI(title="OhO Posture API")
+
+class SettingsUpdate(BaseModel):
+    slump_threshold: float = None
+    fhp_threshold: float = None
+
+class CameraUpdate(BaseModel):
+    source: str
 
 app.add_middleware(
     CORSMiddleware,
@@ -52,14 +60,39 @@ def to_python(obj):
 
 def cv_background_thread():
     global current_processed_frame
-    cap = cv2.VideoCapture(0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    last_source = None
+    cap = None
 
-    while cap.isOpened():
+    print("[cv_background_thread] Started")
+
+    while True:
+        source = str(monitor.config.data.get("camera_source", "0"))
+
+        # Reconnect if source changed or cap is not initialized
+        if source != last_source or cap is None or not cap.isOpened():
+            if cap:
+                cap.release()
+            
+            print(f"[cv_background_thread] Opening camera source: {source}")
+            try:
+                # Try as integer index first if it's a digit
+                cam_id = int(source) if source.strip().isdigit() else source
+                cap = cv2.VideoCapture(cam_id)
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                last_source = source
+            except Exception as e:
+                print(f"[cv_background_thread] Error opening source {source}: {e}")
+                time.sleep(2)
+                continue
+
         success, frame = cap.read()
         if not success:
-            time.sleep(0.05)
+            # Maybe camera was unplugged?
+            print(f"[cv_background_thread] Failed to read from {source}")
+            cap.release()
+            cap = None
+            time.sleep(1)
             continue
 
         try:
@@ -67,10 +100,8 @@ def cv_background_thread():
             with frame_lock:
                 current_processed_frame = processed.copy()
         except Exception as e:
-            print(f"[cv_background_thread] error: {e}")
+            print(f"[cv_background_thread] Frame process error: {e}")
             time.sleep(0.05)
-
-    cap.release()
 
 
 @app.get("/status")
@@ -104,10 +135,26 @@ async def get_status():
         )
 
 
-@app.post("/calibrate")
-async def trigger_calibration():
-    monitor.start_calibration()
     return {"status": "success", "message": "Calibration started for 5 seconds"}
+
+
+@app.get("/settings")
+async def get_settings():
+    return monitor.config.data
+
+
+@app.post("/settings")
+async def update_settings(payload: SettingsUpdate):
+    data = payload.model_dump(exclude_none=True)
+    monitor.apply_config(data)
+    return {"status": "success", "settings": monitor.config.data}
+
+
+@app.post("/camera")
+async def update_camera(payload: CameraUpdate):
+    source = payload.source
+    monitor.config.save({"camera_source": source})
+    return {"status": "success", "message": f"Camera source updated to {source}"}
 
 
 @app.get("/statistics")
